@@ -69,8 +69,8 @@ def process_data(initial_state, target_state, data_split):
     print(f"Testing set: {len(test_dataset)} samples")
 
     # Access training, validation, and testing data as needed
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=32, shuffle=False)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=32, shuffle=False)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=256, shuffle=True)
+    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=256, shuffle=False)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=256, shuffle=False)
 
     return train_loader, val_loader, test_loader
