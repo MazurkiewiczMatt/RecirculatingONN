@@ -51,8 +51,9 @@ def process_data(initial_state, target_state, data_split):
 
     # Split the encoded tensors into training, validation, and testing sets
     dataset_size = len(initial_state)
-    test_size = int(data_split[1] * dataset_size)
-    val_size = int(data_split[2] * dataset_size)
+    val_size = int(data_split[1] * dataset_size)
+    test_size = int(data_split[2] * dataset_size)
+
     train_size = dataset_size - test_size - val_size
 
     # Combine initial and target states into a single dataset for splitting
