@@ -1,6 +1,7 @@
 import torch
 from torch.optim import Adam
 
+
 from tqdm import tqdm
 import pandas as pd
 
@@ -8,6 +9,23 @@ from .data_utils import load_and_preprocess_data, extract_labels
 from .model_utils import initialize_circuit
 from .plot_utils import plot_confusion, plot_loss
 
+
+def save_model(circuit, model_path):
+    """
+    Save the model's state dictionary to the specified path.
+    """
+    torch.save(circuit.state_dict(), model_path)
+    print(f"Model saved to '{model_path}'")
+
+
+def load_model(circuit, model_path, device='cpu'):
+    """
+    Load the model's state dictionary from the specified path.
+    """
+    circuit.load_state_dict(torch.load(model_path, map_location=device))
+    circuit.to(device)
+    print(f"Model loaded from '{model_path}'")
+    return circuit
 
 
 def train_one_epoch(circuit, train_loader, optimizer, loss_f, num_output_modes):
@@ -69,6 +87,13 @@ def train_model(circuit, train_loader, val_loader, loss_f, params):
     print("\nTraining started.\n")
 
     for epoch in (pbar := tqdm(range(num_epochs), desc="Training Progress")):
+
+        if "cavityless_pretraining" in params and params["cavityless_pretraining"] is not None:
+            if epoch == params["cavityless_pretraining"]:
+                circuit.enable_cavity_training()
+                optimizer.add_param_group({'params': circuit.kappa})
+                optimizer.add_param_group({'params': circuit.omega})
+                optimizer.add_param_group({'params': circuit.nonlinearity})
         train_loss = train_one_epoch(circuit, train_loader, optimizer, loss_f, num_output_modes)
         train_losses.append(train_loss)
 
@@ -76,10 +101,15 @@ def train_model(circuit, train_loader, val_loader, loss_f, params):
             val_loss = validate_model(circuit, val_loader, loss_f, num_output_modes)
             val_losses.append(val_loss)
 
-        pbar.set_postfix(train_loss=f"{train_loss:.3f}", val_loss=f"{val_loss:.3f}")
+        # Update progress bar
+        if val_loss is not None:
+            pbar.set_postfix(train_loss=f"{train_loss:.3f}", val_loss=f"{val_loss:.3f}")
+        else:
+            pbar.set_postfix(train_loss=f"{train_loss:.3f}")
         pbar.refresh()
 
-        if epoch % plot_period == 0 and epoch > 0:
+        # Plot losses periodically
+        if (epoch+1) % plot_period == 0:
             plot_loss(train_losses, val_losses, val_period)
 
     print("\nTraining completed.\n")
@@ -126,12 +156,13 @@ def test_model(circuit, test_loader, loss_f, target_codec):
 
     return test_loss, decoded_preds, decoded_targets
 
+
 def save_results(train_losses, val_losses, test_loss, params):
     """
     Save the training, validation, and test results to a CSV file if requested.
     """
     if "csv_file_name" in params and params["csv_file_name"] is not None:
-        # Pad val_losses and test_loss with zeros
+        # Pad val_losses and test_loss with zeros if lengths differ
         max_length = len(train_losses)
         padded_val_losses = val_losses + [0] * (max_length - len(val_losses))
         padded_test_loss = [test_loss] + [0] * (max_length - 1)
@@ -154,8 +185,14 @@ def run_training(params):
      target_codec, loss_f, categories) = load_and_preprocess_data(params)
 
     # Set up the circuit
-    bias_cavities = params.get("bias_cavities", 1)
-    circuit = initialize_circuit(num_input_modes, num_output_modes, bias_cavities)
+    params["num_input_modes"] = num_input_modes
+    params["num_output_modes"] = num_output_modes
+    circuit = initialize_circuit(params)
+
+    # If loading a pre-trained model
+    if "model_load_path" in params and params["model_load_path"] is not None:
+        device = params.get("device", "cpu")
+        circuit = load_model(circuit, params["model_load_path"], device=device)
 
     # Train the model
     train_losses, val_losses = train_model(circuit, train_loader, val_loader, loss_f, params)
@@ -172,5 +209,9 @@ def run_training(params):
 
     # Save results if required
     save_results(train_losses, val_losses, test_loss, params)
+
+    # Save model if required
+    if "model_file_name" in params and params["model_file_name"] is not None:
+        save_model(circuit, params["model_file_name"])
 
     return train_losses, val_losses, test_loss
