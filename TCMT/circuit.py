@@ -7,6 +7,35 @@ from torchinfo import summary
 
 from .parametrized_interferometer import unitary_from_parameters
 
+
+def kappa_function(t, kappa_params):
+    """
+    Computes kappa, a vector of differentiable step functions at time t.
+
+    Parameters:
+    t (torch.Tensor): Time tensor.
+    kappa_params (torch.Tensor): Flattened tensor of parameters (length 3N).
+
+    Returns:
+    torch.Tensor: Vector of step function values, kappa.
+    """
+    # Reshape kappa_params into (N, 3)
+    kappa_params = kappa_params.view(-1, 3)
+
+    # Extract parameters
+    kappa_0 = kappa_params[:, 0] ** 2
+    kappa_1 = kappa_params[:, 1] ** 2
+    transition_time = kappa_params[:, 2] ** 2
+
+    # Fixed sharpness
+    sharpness = 100.0
+
+    # Compute kappa
+    kappa = kappa_0 + (kappa_1 - kappa_0) * torch.sigmoid(sharpness * (t - transition_time))
+
+    return kappa
+
+
 def time_evolution_operator(A, omega, kappa, U, nonlinearity, lambd):
     """Builds the time evolution operator."""
     I = torch.eye(U.shape[0], dtype=torch.complex64)
@@ -20,19 +49,25 @@ def time_evolution_operator(A, omega, kappa, U, nonlinearity, lambd):
     operator = torch.matmul(T1 + T2, A).squeeze(-1)
     return operator
 
-def create_ode(omega, kappa, U, nonlinearity, lambd):
+def create_ode(omega, kappa, U, nonlinearity, lambd, kappa_params=None):
+    if kappa is None and kappa_params is None:
+        raise ValueError('kappa and kappa_params cannot be both None (must be either fixed or DoF).')
     def ode(t, A):
-        dydt = time_evolution_operator(A, omega, kappa**2, U, nonlinearity**2, lambd)
-        return correct_norm(A, dydt)
+        if kappa is not None:
+            dydt = time_evolution_operator(A, omega, kappa**2, U, nonlinearity**2, lambd)
+        else:
+            dydt = time_evolution_operator(A, omega, kappa_function(t, kappa_params), U, nonlinearity ** 2, lambd)
+        return dydt
     return ode
 
 class Circuit(nn.Module):
     """Photonic circuit model."""
-    def __init__(self, computation_time, modes, input_modes, omega, kappa, nonlinearity, lambd, params, learnable_omega, learnable_nonlinearity, learnable_coupling, learnable_interferometer):
+    def __init__(self, computation_time, modes, input_modes, omega, kappa, nonlinearity, lambd, params, learnable_omega, learnable_nonlinearity, learnable_coupling, learnable_interferometer, temporal_DOF):
         super().__init__()
         self.computation_time = computation_time
         self.modes = modes
         self.input_modes = input_modes
+        self.temporal_DOF = temporal_DOF
         if learnable_omega:
             self.omega = nn.Parameter(omega)
         else:
@@ -59,7 +94,13 @@ class Circuit(nn.Module):
         if self.input_modes < self.modes:
             padded_input[:, self.input_modes:] = torch.ones(A0.size(0), self.modes-self.input_modes, dtype=A0.dtype, device=A0.device)
         U = unitary_from_parameters(self.modes, self.params)
-        ode_func = create_ode(self.omega, self.kappa, U, self.nonlinearity, self.lambd)
+        if self.temporal_DOF:
+            kappa = None
+            kappa_params = self.kappa
+        else:
+            kappa = self.kappa
+            kappa_params = None
+        ode_func = create_ode(self.omega, kappa, U, self.nonlinearity, self.lambd, kappa_params=kappa_params)
         t_span = (0, self.computation_time)
         eval_pts = 200
         t_eval = torch.linspace(*t_span, eval_pts)
@@ -97,6 +138,10 @@ class Circuit(nn.Module):
             learnable_nonlinearity = False
             learnable_coupling = False
 
+        temporal_DOF = False
+        if "temporal_DOF" in params:
+            temporal_DOF = params["temporal_DOF"]
+
         num_modes = max(num_input_modes + bias_cavities, num_output_modes)
 
         if initialization_omega is not None:
@@ -109,14 +154,17 @@ class Circuit(nn.Module):
         else:
             nonlinearity = torch.tensor(0.0*1j)
 
-        if initialization_coupling is not None:
-            kappa = torch.full((num_modes,), initialization_coupling, dtype=torch.complex64)
+        if temporal_DOF:
+            kappa = torch.rand(num_modes*3)
         else:
-            kappa =  torch.rand(num_modes)
+            if initialization_coupling is not None:
+                kappa = torch.full((num_modes,), initialization_coupling, dtype=torch.complex64)
+            else:
+                kappa =  torch.rand(num_modes)
 
         params = (torch.rand(num_modes**2 - 1)-0.5)*2*np.pi
 
-        circuit = cls(computation_time, num_modes, num_input_modes, omega, kappa, nonlinearity, lambd, params, learnable_omega, learnable_nonlinearity, learnable_coupling, learnable_interferometer)
+        circuit = cls(computation_time, num_modes, num_input_modes, omega, kappa, nonlinearity, lambd, params, learnable_omega, learnable_nonlinearity, learnable_coupling, learnable_interferometer, temporal_DOF)
         print("\nModel summary")
         summary(circuit)
 
